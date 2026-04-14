@@ -139,6 +139,52 @@ impl CliError {
         ])
     }
 
+    pub fn stitch_output_must_be_png(path: &Path) -> Self {
+        Self::new(format!(
+            "Stitch output must use a `.png` file extension: {}",
+            path.display()
+        ))
+        .suggestions([
+            "Change the output path to end with `.png`.".to_string(),
+            "For example: `tilecut stitch build/minimap/manifest.json --out verify.png`."
+                .to_string(),
+        ])
+    }
+
+    pub fn stitch_level_missing(level: u32) -> Self {
+        Self::new(format!(
+            "Requested stitch level does not exist in the manifest: {level}"
+        ))
+        .suggestions([
+            "Check the manifest `levels` list and pick one of the available level numbers."
+                .to_string(),
+            "If you need more zoom levels, rebuild with a higher `--max-level`.".to_string(),
+        ])
+    }
+
+    pub fn stitch_tile_missing(path: &Path) -> Self {
+        Self::new(format!(
+            "A required tile file is missing for stitch: {}",
+            path.display()
+        ))
+        .suggestions([
+            "Re-run `tilecut validate` to inspect the output directory.".to_string(),
+            "Rebuild the tileset with `tilecut cut --overwrite` if files were deleted.".to_string(),
+        ])
+    }
+
+    pub fn stitch_tile_decode_failed(path: &Path, detail: impl Into<String>) -> Self {
+        Self::new(format!(
+            "TileCut could not decode a stitched tile: {}",
+            path.display()
+        ))
+        .suggestions([
+            "Validate the tileset to find damaged files.".to_string(),
+            "Rebuild the tileset if the tile file is corrupted.".to_string(),
+        ])
+        .detail(detail)
+    }
+
     pub fn manifest_read_failed(path: &Path, detail: impl Into<String>) -> Self {
         Self::new(format!(
             "TileCut could not read the manifest: {}",

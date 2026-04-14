@@ -3,6 +3,15 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use image::{DynamicImage, RgbaImage, imageops::FilterType};
 
+pub fn resize_rgba_to_dimensions(image: &RgbaImage, out_width: u32, out_height: u32) -> RgbaImage {
+    if image.width() == out_width && image.height() == out_height {
+        return image.clone();
+    }
+    DynamicImage::ImageRgba8(image.clone())
+        .resize(out_width, out_height, FilterType::Lanczos3)
+        .to_rgba8()
+}
+
 pub fn resize_rgba_for_overview(image: &RgbaImage, max_edge: u32) -> RgbaImage {
     if max_edge == 0 {
         return image.clone();
@@ -16,9 +25,7 @@ pub fn resize_rgba_for_overview(image: &RgbaImage, max_edge: u32) -> RgbaImage {
     let scale = max_edge as f64 / longest as f64;
     let out_width = (width as f64 * scale).round().max(1.0) as u32;
     let out_height = (height as f64 * scale).round().max(1.0) as u32;
-    DynamicImage::ImageRgba8(image.clone())
-        .resize(out_width, out_height, FilterType::Lanczos3)
-        .to_rgba8()
+    resize_rgba_to_dimensions(image, out_width, out_height)
 }
 
 pub fn generate_overview_with_image_crate(

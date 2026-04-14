@@ -44,14 +44,14 @@ pub fn run(args: CutArgs) -> Result<()> {
     if args.resume {
         resume_existing_output(&args.out, &fingerprint)?;
         write_plan_file(&args.out, &fingerprint)?;
-        write_state_file(&args.out, &BuildState::new(plan.tiles.len()))?;
+        write_state_file(&args.out, &BuildState::new(plan.total_tile_slots()))?;
         backend.write_tiles(&plan, &args.out, true, thread_count)?;
         maybe_generate_overview(&plan, backend.as_ref(), &args.out, true)?;
         finalize_output(&plan, &args.out)?;
     } else {
         let staging_dir = prepare_staging_dir(&args.out, args.overwrite)?;
         write_plan_file(&staging_dir, &fingerprint)?;
-        write_state_file(&staging_dir, &BuildState::new(plan.tiles.len()))?;
+        write_state_file(&staging_dir, &BuildState::new(plan.total_tile_slots()))?;
         backend.write_tiles(&plan, &staging_dir, false, thread_count)?;
         maybe_generate_overview(&plan, backend.as_ref(), &staging_dir, false)?;
         finalize_output(&plan, &staging_dir)?;
@@ -76,8 +76,21 @@ fn preflight_output_target(args: &CutArgs) -> Result<()> {
 fn print_dry_run(plan: &CutPlan, backend: crate::backend::ResolvedBackendKind) {
     println!("Input: {}", plan.source.path);
     println!("Size: {}x{}", plan.source.width, plan.source.height);
+    println!("Levels: {}", plan.levels.len());
     println!("Grid: {} cols x {} rows", plan.grid.cols, plan.grid.rows);
-    println!("Tiles: {}", plan.tiles.len());
+    println!("Tiles: {}", plan.total_tile_slots());
+    for level in &plan.levels {
+        println!(
+            "  Level {}: scale {:.3}, {}x{}, grid {}x{}, tiles {}",
+            level.level,
+            level.scale,
+            level.width,
+            level.height,
+            level.grid.cols,
+            level.grid.rows,
+            level.tiles.len()
+        );
+    }
     println!("Output Format: {:?}", plan.tile.format);
     println!("Manifest Mode: {:?}", plan.manifest_mode);
     println!("Tile Index: {:?}", plan.tile_index_mode);
@@ -163,19 +176,21 @@ fn finalize_output(plan: &CutPlan, out_dir: &Path) -> Result<()> {
 }
 
 fn scan_inventory(plan: &CutPlan, out_dir: &Path) -> Result<Vec<TileInventoryEntry>> {
-    let mut inventory = Vec::with_capacity(plan.tiles.len());
-    for tile in &plan.tiles {
-        let path = out_dir.join(&tile.out_rel_path);
-        let skipped = !path.exists();
-        inventory.push(TileInventoryEntry {
-            level: tile.coord.level,
-            x: tile.coord.x,
-            y: tile.coord.y,
-            path: (!skipped).then(|| tile.out_rel_path.to_string_lossy().to_string()),
-            src_rect: tile.src_rect,
-            content_rect: tile.content_rect,
-            skipped,
-        });
+    let mut inventory = Vec::with_capacity(plan.total_tile_slots());
+    for level in &plan.levels {
+        for tile in &level.tiles {
+            let path = out_dir.join(&tile.out_rel_path);
+            let skipped = !path.exists();
+            inventory.push(TileInventoryEntry {
+                level: tile.coord.level,
+                x: tile.coord.x,
+                y: tile.coord.y,
+                path: (!skipped).then(|| tile.out_rel_path.to_string_lossy().to_string()),
+                src_rect: tile.src_rect,
+                content_rect: tile.content_rect,
+                skipped,
+            });
+        }
     }
     Ok(inventory)
 }

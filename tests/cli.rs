@@ -5,6 +5,7 @@ use assert_cmd::Command;
 use image::{Rgba, RgbaImage};
 use predicates::prelude::*;
 use tempfile::TempDir;
+use tilecut::overview::resize_rgba_to_dimensions;
 
 fn write_rgba_fixture<F>(path: &Path, width: u32, height: u32, painter: F)
 where
@@ -19,6 +20,10 @@ fn read_manifest(out_dir: &Path) -> serde_json::Value {
         &fs::read_to_string(out_dir.join("manifest.json")).expect("manifest exists"),
     )
     .expect("manifest json")
+}
+
+fn read_rgba(path: &Path) -> RgbaImage {
+    image::open(path).expect("image exists").to_rgba8()
 }
 
 #[test]
@@ -53,6 +58,7 @@ fn inspect_help_shows_usage_notes() {
         .stdout(
             predicate::str::contains("TileCut reports the source dimensions")
                 .and(predicate::str::contains("Tile sizing:"))
+                .and(predicate::str::contains("--max-level"))
                 .and(predicate::str::contains("--json"))
                 .and(predicate::str::contains("Notes:")),
         );
@@ -69,12 +75,31 @@ fn cut_help_groups_options_and_examples() {
         .stdout(
             predicate::str::contains("Output & layout:")
                 .and(predicate::str::contains("Tile sizing:"))
+                .and(predicate::str::contains("--max-level"))
                 .and(predicate::str::contains("Manifest & indexing:"))
                 .and(predicate::str::contains("World mapping:"))
                 .and(predicate::str::contains("Resuming & overwrite:"))
                 .and(predicate::str::contains("Backend & performance:"))
                 .and(predicate::str::contains("Advanced & debugging:"))
                 .and(predicate::str::contains("tilecut cut map.png --out out --manifest full --tile-index ndjson --skip-empty")),
+        );
+}
+
+#[test]
+fn stitch_help_mentions_png_and_level() {
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("stitch")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Stitch currently writes PNG output only.")
+                .and(predicate::str::contains("--out"))
+                .and(predicate::str::contains("--level"))
+                .and(predicate::str::contains(
+                    "tilecut stitch build/minimap/manifest.json --out verify.png",
+                )),
         );
 }
 
@@ -116,6 +141,39 @@ fn inspect_reports_expected_grid_as_json() {
     assert_eq!(report["cols"], 3);
     assert_eq!(report["rows"], 2);
     assert_eq!(report["backend"]["recommended"], "image");
+}
+
+#[test]
+fn inspect_reports_pyramid_levels_as_json() {
+    let temp = TempDir::new().expect("tempdir");
+    let input = temp.path().join("inspect-pyramid.png");
+    write_rgba_fixture(&input, 513, 513, |x, y| {
+        [(x % 255) as u8, (y % 255) as u8, 32, 255]
+    });
+
+    let mut cmd = Command::cargo_bin("tilecut").expect("binary");
+    let assert = cmd
+        .arg("inspect")
+        .arg(&input)
+        .arg("--tile-size")
+        .arg("256")
+        .arg("--max-level")
+        .arg("2")
+        .arg("--json")
+        .assert()
+        .success();
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("inspect json");
+    assert_eq!(report["total_levels"], 3);
+    assert_eq!(report["total_tile_count"], 14);
+    assert_eq!(report["levels"][0]["scale"], 1.0);
+    assert_eq!(report["levels"][1]["scale"], 0.5);
+    assert_eq!(report["levels"][2]["scale"], 0.25);
+    assert_eq!(report["levels"][1]["width"], 257);
+    assert_eq!(report["levels"][1]["height"], 257);
+    assert_eq!(report["levels"][2]["cols"], 1);
+    assert_eq!(report["levels"][2]["rows"], 1);
 }
 
 #[test]
@@ -315,6 +373,25 @@ fn cut_reports_jpeg_transparency_requirement() {
 }
 
 #[test]
+fn stitch_rejects_non_png_output() {
+    let temp = TempDir::new().expect("tempdir");
+    let manifest = temp.path().join("manifest.json");
+    fs::write(&manifest, "{}").expect("write manifest placeholder");
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("stitch")
+        .arg(&manifest)
+        .arg("--out")
+        .arg(temp.path().join("verify.jpg"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Stitch output must use a `.png` file extension",
+        ));
+}
+
+#[test]
 fn cut_generates_compact_manifest_and_padded_edges() {
     let temp = TempDir::new().expect("tempdir");
     let input = temp.path().join("compact.png");
@@ -372,6 +449,107 @@ fn cut_generates_compact_manifest_and_padded_edges() {
 }
 
 #[test]
+fn cut_generates_multi_level_manifest_and_stitch_matches_levels() {
+    let temp = TempDir::new().expect("tempdir");
+    let input = temp.path().join("pyramid.png");
+    let out_dir = temp.path().join("out");
+    write_rgba_fixture(&input, 8, 8, |x, y| [x as u8 * 17, y as u8 * 23, 40, 255]);
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("cut")
+        .arg(&input)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--tile-size")
+        .arg("4")
+        .arg("--max-level")
+        .arg("1")
+        .arg("--tile-index")
+        .arg("ndjson")
+        .assert()
+        .success();
+
+    let manifest = read_manifest(&out_dir);
+    assert_eq!(manifest["schema_version"], "2.0.0");
+    assert_eq!(manifest["levels"].as_array().expect("levels").len(), 2);
+    assert_eq!(manifest["levels"][0]["tile_count"], 4);
+    assert_eq!(manifest["levels"][1]["tile_count"], 1);
+    assert_eq!(manifest["stats"]["total_slots"], 5);
+    assert_eq!(
+        manifest["naming"]["path_template"],
+        "tiles/l{level}/x{x}_y{y}.png"
+    );
+    assert!(out_dir.join("tiles/l0000/x0000_y0000.png").exists());
+    assert!(out_dir.join("tiles/l0001/x0000_y0000.png").exists());
+
+    let ndjson = fs::read_to_string(out_dir.join("tiles.ndjson")).expect("ndjson exists");
+    assert!(ndjson.lines().any(|line| line.contains("\"level\":1")));
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("validate")
+        .arg(out_dir.join("manifest.json"))
+        .assert()
+        .success();
+
+    let stitched_level0 = temp.path().join("stitched-level0.png");
+    let stitched_level1 = temp.path().join("stitched-level1.png");
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("stitch")
+        .arg(out_dir.join("manifest.json"))
+        .arg("--out")
+        .arg(&stitched_level0)
+        .assert()
+        .success();
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("stitch")
+        .arg(out_dir.join("manifest.json"))
+        .arg("--out")
+        .arg(&stitched_level1)
+        .arg("--level")
+        .arg("1")
+        .assert()
+        .success();
+
+    let original = read_rgba(&input);
+    let stitched0 = read_rgba(&stitched_level0);
+    assert_eq!(stitched0, original);
+
+    let expected_level1 = resize_rgba_to_dimensions(&original, 4, 4);
+    let stitched1 = read_rgba(&stitched_level1);
+    assert_eq!(stitched1, expected_level1);
+}
+
+#[test]
+fn cut_generates_multi_level_sharded_paths() {
+    let temp = TempDir::new().expect("tempdir");
+    let input = temp.path().join("sharded-pyramid.png");
+    let out_dir = temp.path().join("out");
+    write_rgba_fixture(&input, 8, 8, |x, y| [x as u8, y as u8, 120, 255]);
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("cut")
+        .arg(&input)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--tile-size")
+        .arg("4")
+        .arg("--max-level")
+        .arg("1")
+        .arg("--layout")
+        .arg("sharded")
+        .assert()
+        .success();
+
+    assert!(out_dir.join("tiles/l0000/y0000/x0000.png").exists());
+    assert!(out_dir.join("tiles/l0001/y0000/x0000.png").exists());
+}
+
+#[test]
 fn cut_generates_full_manifest_and_ndjson_for_skip_empty() {
     let temp = TempDir::new().expect("tempdir");
     let input = temp.path().join("sparse.png");
@@ -423,6 +601,46 @@ fn cut_generates_full_manifest_and_ndjson_for_skip_empty() {
 }
 
 #[test]
+fn stitch_keeps_skipped_tiles_transparent() {
+    let temp = TempDir::new().expect("tempdir");
+    let input = temp.path().join("skip-stitch.png");
+    let out_dir = temp.path().join("out");
+    let stitched = temp.path().join("stitched.png");
+    write_rgba_fixture(&input, 8, 8, |x, y| {
+        if x < 4 && y < 4 {
+            [255, 255, 255, 255]
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("cut")
+        .arg(&input)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--tile-size")
+        .arg("4")
+        .arg("--skip-empty")
+        .assert()
+        .success();
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("stitch")
+        .arg(out_dir.join("manifest.json"))
+        .arg("--out")
+        .arg(&stitched)
+        .assert()
+        .success();
+
+    let stitched = read_rgba(&stitched);
+    assert_eq!(stitched.get_pixel(6, 6).0, [0, 0, 0, 0]);
+    assert_eq!(stitched.get_pixel(1, 1).0, [255, 255, 255, 255]);
+}
+
+#[test]
 fn resume_rebuilds_missing_tiles() {
     let temp = TempDir::new().expect("tempdir");
     let input = temp.path().join("resume.png");
@@ -458,6 +676,44 @@ fn resume_rebuilds_missing_tiles() {
 
     assert!(out_dir.join("tiles/x0001_y0001.png").exists());
     assert!(out_dir.join("manifest.json").exists());
+}
+
+#[test]
+fn validate_reports_invalid_level_metadata() {
+    let temp = TempDir::new().expect("tempdir");
+    let input = temp.path().join("invalid-levels.png");
+    let out_dir = temp.path().join("out");
+    write_rgba_fixture(&input, 8, 8, |x, y| [x as u8, y as u8, 200, 255]);
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("cut")
+        .arg(&input)
+        .arg("--out")
+        .arg(&out_dir)
+        .arg("--tile-size")
+        .arg("4")
+        .arg("--max-level")
+        .arg("1")
+        .assert()
+        .success();
+
+    let manifest_path = out_dir.join("manifest.json");
+    let mut manifest = read_manifest(&out_dir);
+    manifest["levels"][1]["scale"] = serde_json::json!(0.4);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("rewrite manifest");
+
+    Command::cargo_bin("tilecut")
+        .expect("binary")
+        .arg("validate")
+        .arg(&manifest_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("level 1 has invalid scale"));
 }
 
 #[test]

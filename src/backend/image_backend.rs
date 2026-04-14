@@ -11,7 +11,7 @@ use rayon::ThreadPoolBuilder;
 
 use crate::backend::{TileBackend, inspect_source};
 use crate::error::CliError;
-use crate::overview::resize_rgba_for_overview;
+use crate::overview::{resize_rgba_for_overview, resize_rgba_to_dimensions};
 use crate::plan::{CutPlan, SourceInfo, TilePlan};
 
 pub struct ImageBackend {
@@ -44,37 +44,48 @@ impl TileBackend for ImageBackend {
         skip_existing: bool,
         threads: usize,
     ) -> Result<()> {
-        let image = Arc::clone(&self.image);
         let pool = ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .context("failed to build rayon thread pool")?;
-        pool.install(|| {
-            use rayon::prelude::*;
-            plan.tiles.par_iter().try_for_each(|tile| {
-                let output_path = output_root.join(&tile.out_rel_path);
-                if skip_existing && output_path.exists() {
-                    return Ok(());
-                }
-                if let Some(parent) = output_path.parent() {
-                    fs::create_dir_all(parent)
-                        .with_context(|| format!("failed to create {}", parent.display()))?;
-                }
-                let cropped = image
-                    .view(
-                        tile.src_rect.x,
-                        tile.src_rect.y,
-                        tile.src_rect.w,
-                        tile.src_rect.h,
-                    )
-                    .to_image();
-                let rendered = render_tile_image(plan, tile, &cropped)?;
-                match rendered {
-                    Some(tile_image) => write_encoded_image(&output_path, &tile_image, plan),
-                    None => Ok(()),
-                }
-            })
-        })
+        for level in &plan.levels {
+            let level_image = if level.level == 0 {
+                Arc::clone(&self.image)
+            } else {
+                Arc::new(resize_rgba_to_dimensions(
+                    &self.image,
+                    level.width,
+                    level.height,
+                ))
+            };
+            pool.install(|| {
+                use rayon::prelude::*;
+                level.tiles.par_iter().try_for_each(|tile| {
+                    let output_path = output_root.join(&tile.out_rel_path);
+                    if skip_existing && output_path.exists() {
+                        return Ok(());
+                    }
+                    if let Some(parent) = output_path.parent() {
+                        fs::create_dir_all(parent)
+                            .with_context(|| format!("failed to create {}", parent.display()))?;
+                    }
+                    let cropped = level_image
+                        .view(
+                            tile.src_rect.x,
+                            tile.src_rect.y,
+                            tile.src_rect.w,
+                            tile.src_rect.h,
+                        )
+                        .to_image();
+                    let rendered = render_tile_image(plan, tile, &cropped)?;
+                    match rendered {
+                        Some(tile_image) => write_encoded_image(&output_path, &tile_image, plan),
+                        None => Ok(()),
+                    }
+                })
+            })?;
+        }
+        Ok(())
     }
 
     fn generate_overview(&self, max_edge: u32, out_path: &Path) -> Result<()> {

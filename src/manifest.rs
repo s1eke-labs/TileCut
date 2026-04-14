@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::cli::{EdgeMode, LayoutMode, OutputFormat, TileIndexMode, YAxis};
 use crate::plan::{CutPlan, RectU32, SourceInfo, TilePlan};
 
-pub const SCHEMA_VERSION: &str = "1.0.0";
+pub const SCHEMA_VERSION: &str = "2.0.0";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -85,6 +85,10 @@ pub struct ManifestLevel {
     pub height: u32,
     pub cols: u32,
     pub rows: u32,
+    pub zero_pad_width: usize,
+    pub tile_count: usize,
+    pub skipped_count: usize,
+    pub total_slots: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -125,7 +129,8 @@ pub struct TileInventoryEntry {
 }
 
 impl Manifest {
-    pub fn from_plan(plan: &CutPlan, inventory: Vec<TileInventoryEntry>) -> Self {
+    pub fn from_plan(plan: &CutPlan, mut inventory: Vec<TileInventoryEntry>) -> Self {
+        inventory.sort_by_key(|entry| (entry.level, entry.y, entry.x));
         let tile_count = inventory.iter().filter(|entry| !entry.skipped).count();
         let skipped_count = inventory.len().saturating_sub(tile_count);
         let tiles = if plan.manifest_mode == crate::cli::ManifestMode::Full {
@@ -146,6 +151,31 @@ impl Manifest {
         } else {
             None
         };
+        let levels = plan
+            .levels
+            .iter()
+            .map(|level| {
+                let total_slots = level.tiles.len();
+                let tile_count = inventory
+                    .iter()
+                    .filter(|entry| entry.level == level.level && !entry.skipped)
+                    .count();
+                let skipped_count = total_slots.saturating_sub(tile_count);
+                ManifestLevel {
+                    level: level.level,
+                    scale: level.scale,
+                    width: level.width,
+                    height: level.height,
+                    cols: level.grid.cols,
+                    rows: level.grid.rows,
+                    zero_pad_width: level.grid.zero_pad_width,
+                    tile_count,
+                    skipped_count,
+                    total_slots,
+                }
+            })
+            .collect();
+
         Self {
             schema_version: SCHEMA_VERSION.to_string(),
             generator: GeneratorInfo {
@@ -182,14 +212,7 @@ impl Manifest {
                 units_per_pixel: world.units_per_pixel,
                 y_axis: world.y_axis,
             }),
-            levels: vec![ManifestLevel {
-                level: 0,
-                scale: 1.0,
-                width: plan.source.width,
-                height: plan.source.height,
-                cols: plan.grid.cols,
-                rows: plan.grid.rows,
-            }],
+            levels,
             stats: ManifestStats {
                 tile_count,
                 skipped_count,
@@ -240,10 +263,32 @@ mod tests {
     use crate::cli::{
         BackendKind, EdgeMode, LayoutMode, ManifestMode, OutputFormat, TileIndexMode,
     };
-    use crate::plan::{CutPlan, GridInfo, RectU32, SourceInfo, TileCoord, TilePlan, TileSpec};
+    use crate::plan::{
+        CutPlan, GridInfo, LevelPlan, RectU32, SourceInfo, TileCoord, TilePlan, TileSpec,
+    };
 
     #[test]
-    fn serializes_full_manifest_with_tiles() {
+    fn serializes_full_manifest_with_tiles_and_levels() {
+        let level0_tile = TilePlan {
+            coord: TileCoord {
+                level: 0,
+                x: 0,
+                y: 0,
+            },
+            src_rect: RectU32 {
+                x: 0,
+                y: 0,
+                w: 128,
+                h: 128,
+            },
+            content_rect: RectU32 {
+                x: 0,
+                y: 0,
+                w: 128,
+                h: 128,
+            },
+            out_rel_path: "tiles/l0000/x0000_y0000.png".into(),
+        };
         let plan = CutPlan {
             source: SourceInfo {
                 path: "map.png".to_string(),
@@ -268,62 +313,114 @@ mod tests {
                 rows: 2,
                 zero_pad_width: 4,
             },
+            levels: vec![
+                LevelPlan {
+                    level: 0,
+                    scale: 1.0,
+                    width: 256,
+                    height: 256,
+                    grid: GridInfo {
+                        cols: 2,
+                        rows: 2,
+                        zero_pad_width: 4,
+                    },
+                    naming_template: "tiles/l{level}/x{x}_y{y}.png".to_string(),
+                    tiles: vec![level0_tile.clone()],
+                },
+                LevelPlan {
+                    level: 1,
+                    scale: 0.5,
+                    width: 128,
+                    height: 128,
+                    grid: GridInfo {
+                        cols: 1,
+                        rows: 1,
+                        zero_pad_width: 4,
+                    },
+                    naming_template: "tiles/l{level}/x{x}_y{y}.png".to_string(),
+                    tiles: vec![TilePlan {
+                        coord: TileCoord {
+                            level: 1,
+                            x: 0,
+                            y: 0,
+                        },
+                        src_rect: RectU32 {
+                            x: 0,
+                            y: 0,
+                            w: 128,
+                            h: 128,
+                        },
+                        content_rect: RectU32 {
+                            x: 0,
+                            y: 0,
+                            w: 128,
+                            h: 128,
+                        },
+                        out_rel_path: "tiles/l0001/x0000_y0000.png".into(),
+                    }],
+                },
+            ],
             layout: LayoutMode::Flat,
             manifest_mode: ManifestMode::Full,
             tile_index_mode: TileIndexMode::None,
             requested_backend: BackendKind::Image,
             max_in_memory_mib: 2048,
+            max_level: 1,
             overview: None,
             skip_empty: false,
             empty_alpha_threshold: 0,
             world: None,
-            naming_template: "tiles/x{x}_y{y}.png".to_string(),
-            tiles: vec![TilePlan {
-                coord: TileCoord {
-                    level: 0,
-                    x: 0,
-                    y: 0,
-                },
-                src_rect: RectU32 {
-                    x: 0,
-                    y: 0,
-                    w: 128,
-                    h: 128,
-                },
-                content_rect: RectU32 {
-                    x: 0,
-                    y: 0,
-                    w: 128,
-                    h: 128,
-                },
-                out_rel_path: "tiles/x0000_y0000.png".into(),
-            }],
+            naming_template: "tiles/l{level}/x{x}_y{y}.png".to_string(),
         };
 
         let manifest = Manifest::from_plan(
             &plan,
-            vec![TileInventoryEntry {
-                level: 0,
-                x: 0,
-                y: 0,
-                path: Some("tiles/x0000_y0000.png".to_string()),
-                src_rect: RectU32 {
+            vec![
+                TileInventoryEntry {
+                    level: 1,
                     x: 0,
                     y: 0,
-                    w: 128,
-                    h: 128,
+                    path: Some("tiles/l0001/x0000_y0000.png".to_string()),
+                    src_rect: RectU32 {
+                        x: 0,
+                        y: 0,
+                        w: 128,
+                        h: 128,
+                    },
+                    content_rect: RectU32 {
+                        x: 0,
+                        y: 0,
+                        w: 128,
+                        h: 128,
+                    },
+                    skipped: false,
                 },
-                content_rect: RectU32 {
+                TileInventoryEntry {
+                    level: 0,
                     x: 0,
                     y: 0,
-                    w: 128,
-                    h: 128,
+                    path: Some("tiles/l0000/x0000_y0000.png".to_string()),
+                    src_rect: RectU32 {
+                        x: 0,
+                        y: 0,
+                        w: 128,
+                        h: 128,
+                    },
+                    content_rect: RectU32 {
+                        x: 0,
+                        y: 0,
+                        w: 128,
+                        h: 128,
+                    },
+                    skipped: false,
                 },
-                skipped: false,
-            }],
+            ],
         );
 
         assert!(manifest.tiles.is_some());
-        assert_eq!(manifest.stats.tile_count, 1);
+        assert_eq!(manifest.stats.tile_count, 2);
+        assert_eq!(manifest.levels.len(), 2);
+        assert_eq!(manifest.levels[0].level, 0);
+        assert_eq!(manifest.levels[1].level, 1);
     }
 }

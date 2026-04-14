@@ -29,15 +29,21 @@ pub enum Command {
     #[command(
         about = "Read image dimensions and preview the cut plan.",
         long_about = "Inspect an input image without writing tiles.\n\nTileCut reports the source dimensions, tile grid size, estimated in-memory RGBA size, and which backend `auto` would choose for the requested tile settings.",
-        after_long_help = "Examples:\n  tilecut inspect world_map.png --tile-size 256\n  tilecut inspect world_map.png --tile-width 512 --tile-height 256 --edge crop --json\n\nNotes:\n  - `pad` keeps a full tile at the image edges.\n  - `skip` ignores partial edge tiles entirely."
+        after_long_help = "Examples:\n  tilecut inspect world_map.png --tile-size 256\n  tilecut inspect world_map.png --tile-width 512 --tile-height 256 --edge crop --json\n  tilecut inspect world_map.png --tile-size 256 --max-level 2 --json\n\nNotes:\n  - `pad` keeps a full tile at the image edges.\n  - `skip` ignores partial edge tiles entirely.\n  - `--max-level N` builds a standard 1/2 pyramid from level 0 through level N."
     )]
     Inspect(InspectArgs),
     #[command(
         about = "Cut tiles, write manifests, and optionally generate previews.",
         long_about = "Cut an input image into tiles and write a build directory containing `manifest.json`, tile files, optional `tiles.ndjson`, optional `preview/overview.png`, and internal `.tilecut` resume metadata.",
-        after_long_help = "Examples:\n  tilecut cut map.png --out out --tile-size 256\n  tilecut cut map.png --out out --overview 1024\n  tilecut cut map.png --out out --world-origin=0,0 --units-per-pixel 1\n  tilecut cut map.png --out out --manifest full --tile-index ndjson --skip-empty\n  tilecut cut map.png --out out --format jpeg --flatten-alpha 0,0,0,255\n\nNotes:\n  - `compact` manifest mode stores tile rules and statistics, not every tile record.\n  - `full` manifest mode expands every tile and is easier to debug on smaller maps.\n  - `backend auto` chooses `image` for smaller inputs and prefers `vips` once the estimated RGBA size exceeds the memory budget."
+        after_long_help = "Examples:\n  tilecut cut map.png --out out --tile-size 256\n  tilecut cut map.png --out out --max-level 2\n  tilecut cut map.png --out out --overview 1024\n  tilecut cut map.png --out out --world-origin=0,0 --units-per-pixel 1\n  tilecut cut map.png --out out --manifest full --tile-index ndjson --skip-empty\n  tilecut cut map.png --out out --format jpeg --flatten-alpha 0,0,0,255\n\nNotes:\n  - `compact` manifest mode stores tile rules and statistics, not every tile record.\n  - `full` manifest mode expands every tile and is easier to debug on smaller maps.\n  - `--max-level N` builds a standard 1/2 pyramid from level 0 through level N.\n  - `backend auto` chooses `image` for smaller inputs and prefers `vips` once the estimated RGBA size exceeds the memory budget."
     )]
     Cut(CutArgs),
+    #[command(
+        about = "Rebuild a stitched PNG for a specific manifest level.",
+        long_about = "Read a TileCut manifest and reconstruct one output level as a single PNG image.\n\nThis is primarily intended for verification and debugging so you can confirm that tile layout, edge handling, and skipped regions behave as expected.",
+        after_long_help = "Examples:\n  tilecut stitch build/minimap/manifest.json --out verify.png\n  tilecut stitch build/minimap/manifest.json --out level1.png --level 1\n\nNotes:\n  - Stitch currently writes PNG output only.\n  - When `tiles.ndjson` is present, omitted coordinates are treated as skipped tiles."
+    )]
+    Stitch(StitchArgs),
     #[command(
         about = "Check a manifest and its tile output for consistency.",
         long_about = "Validate an existing TileCut output by checking the manifest schema, derived tile count, optional `tiles.ndjson`, on-disk files, and tile image dimensions.",
@@ -97,6 +103,14 @@ pub struct InspectArgs {
         long_help = "How to handle partial edge tiles.\n\n`pad` keeps the output tile size fixed and fills the unused area with the pad color.\n`crop` writes a smaller image for partial edge tiles.\n`skip` ignores partial edge tiles entirely."
     )]
     pub edge: EdgeMode,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        help_heading = "Planning",
+        help = "Build a 1/2 pyramid from level 0 through this level."
+    )]
+    pub max_level: u32,
     #[arg(
         long,
         value_name = "MIB",
@@ -170,6 +184,14 @@ pub struct CutArgs {
         help = "Directory layout for generated tiles."
     )]
     pub layout: LayoutMode,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        help_heading = "Planning",
+        help = "Build a 1/2 pyramid from level 0 through this level."
+    )]
+    pub max_level: u32,
     #[arg(
         long,
         value_name = "PX",
@@ -307,6 +329,27 @@ pub struct ValidateArgs {
         help = "Print the validation report as JSON."
     )]
     pub json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct StitchArgs {
+    #[arg(value_name = "MANIFEST", help = "Path to the manifest file to stitch.")]
+    pub manifest: PathBuf,
+    #[arg(
+        long,
+        value_name = "PNG",
+        help_heading = "Output",
+        help = "PNG file to write."
+    )]
+    pub out: PathBuf,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        help_heading = "Selection",
+        help = "Which pyramid level to stitch."
+    )]
+    pub level: u32,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]

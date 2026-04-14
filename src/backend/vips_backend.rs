@@ -49,49 +49,78 @@ impl TileBackend for VipsBackend {
             .num_threads(threads)
             .build()
             .context("failed to build rayon thread pool")?;
-        pool.install(|| {
-            use rayon::prelude::*;
-            plan.tiles.par_iter().try_for_each(|tile| {
-                let output_path = output_root.join(&tile.out_rel_path);
-                if skip_existing && output_path.exists() {
-                    return Ok(());
-                }
-                if let Some(parent) = output_path.parent() {
-                    fs::create_dir_all(parent)
-                        .with_context(|| format!("failed to create {}", parent.display()))?;
-                }
+        for level in &plan.levels {
+            let resized_input = if level.level == 0 {
+                None
+            } else {
                 let temp = Builder::new()
                     .suffix(".png")
                     .tempfile()
-                    .context("failed to create temporary crop")?;
-                let crop_path = temp.path().to_path_buf();
+                    .context("failed to create temporary resized image")?;
                 let status = Command::new("vips")
-                    .arg("crop")
+                    .arg("resize")
                     .arg(&input)
-                    .arg(&crop_path)
-                    .arg(tile.src_rect.x.to_string())
-                    .arg(tile.src_rect.y.to_string())
-                    .arg(tile.src_rect.w.to_string())
-                    .arg(tile.src_rect.h.to_string())
+                    .arg(temp.path())
+                    .arg(level.scale.to_string())
                     .status()
-                    .context("failed to launch `vips crop`")?;
+                    .context("failed to launch `vips resize`")?;
                 if !status.success() {
-                    bail!(
-                        "`vips crop` failed for tile {},{}",
-                        tile.coord.x,
-                        tile.coord.y
-                    );
+                    bail!("`vips resize` failed for level {}", level.level);
                 }
-                let cropped: RgbaImage = image::open(&crop_path)
-                    .with_context(|| format!("failed to decode vips crop {}", crop_path.display()))?
-                    .to_rgba8();
-                let rendered = render_tile_image(plan, tile, &cropped)?;
-                if let Some(tile_image) = rendered {
-                    write_encoded_image(&output_path, &tile_image, plan)?;
-                }
-                Ok(())
-            })
-        })
+                Some(temp)
+            };
+            let level_input = resized_input
+                .as_ref()
+                .map(|temp| temp.path())
+                .unwrap_or(input.as_path());
+            pool.install(|| {
+                use rayon::prelude::*;
+                level.tiles.par_iter().try_for_each(|tile| {
+                    let output_path = output_root.join(&tile.out_rel_path);
+                    if skip_existing && output_path.exists() {
+                        return Ok(());
+                    }
+                    if let Some(parent) = output_path.parent() {
+                        fs::create_dir_all(parent)
+                            .with_context(|| format!("failed to create {}", parent.display()))?;
+                    }
+                    let temp = Builder::new()
+                        .suffix(".png")
+                        .tempfile()
+                        .context("failed to create temporary crop")?;
+                    let crop_path = temp.path().to_path_buf();
+                    let status = Command::new("vips")
+                        .arg("crop")
+                        .arg(level_input)
+                        .arg(&crop_path)
+                        .arg(tile.src_rect.x.to_string())
+                        .arg(tile.src_rect.y.to_string())
+                        .arg(tile.src_rect.w.to_string())
+                        .arg(tile.src_rect.h.to_string())
+                        .status()
+                        .context("failed to launch `vips crop`")?;
+                    if !status.success() {
+                        bail!(
+                            "`vips crop` failed for level {}, tile {},{}",
+                            tile.coord.level,
+                            tile.coord.x,
+                            tile.coord.y
+                        );
+                    }
+                    let cropped: RgbaImage = image::open(&crop_path)
+                        .with_context(|| {
+                            format!("failed to decode vips crop {}", crop_path.display())
+                        })?
+                        .to_rgba8();
+                    let rendered = render_tile_image(plan, tile, &cropped)?;
+                    if let Some(tile_image) = rendered {
+                        write_encoded_image(&output_path, &tile_image, plan)?;
+                    }
+                    Ok(())
+                })
+            })?;
+        }
+        Ok(())
     }
 
     fn generate_overview(&self, max_edge: u32, out_path: &Path) -> Result<()> {

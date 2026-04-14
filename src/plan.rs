@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 
 use crate::backend::{BackendSupport, estimated_rgba_bytes, inspect_source};
 use crate::cli::{
-    BackendKind, CutArgs, EdgeMode, LayoutMode, ManifestMode, OutputFormat, Point2, TileIndexMode,
+    BackendKind, CutArgs, EdgeMode, InspectArgs, LayoutMode, ManifestMode, OutputFormat, Point2,
+    TileIndexMode,
 };
 use crate::coords::WorldMapping;
 use crate::naming::{path_template, render_rel_path, zero_pad_width};
@@ -65,21 +66,33 @@ pub struct TilePlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LevelPlan {
+    pub level: u32,
+    pub scale: f64,
+    pub width: u32,
+    pub height: u32,
+    pub grid: GridInfo,
+    pub naming_template: String,
+    pub tiles: Vec<TilePlan>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CutPlan {
     pub source: SourceInfo,
     pub tile: TileSpec,
     pub grid: GridInfo,
+    pub levels: Vec<LevelPlan>,
     pub layout: LayoutMode,
     pub manifest_mode: ManifestMode,
     pub tile_index_mode: TileIndexMode,
     pub requested_backend: BackendKind,
     pub max_in_memory_mib: u64,
+    pub max_level: u32,
     pub overview: Option<u32>,
     pub skip_empty: bool,
     pub empty_alpha_threshold: u8,
     pub world: Option<WorldMapping>,
     pub naming_template: String,
-    pub tiles: Vec<TilePlan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -97,6 +110,7 @@ pub struct BuildFingerprint {
     pub layout: LayoutMode,
     pub manifest_mode: ManifestMode,
     pub tile_index_mode: TileIndexMode,
+    pub max_level: u32,
     pub skip_empty: bool,
     pub empty_alpha_threshold: u8,
     pub overview: Option<u32>,
@@ -113,6 +127,17 @@ pub struct BuildState {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InspectLevelReport {
+    pub level: u32,
+    pub scale: f64,
+    pub width: u32,
+    pub height: u32,
+    pub cols: u32,
+    pub rows: u32,
+    pub tile_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InspectReport {
     pub source: SourceInfo,
     pub tile_width: u32,
@@ -121,8 +146,11 @@ pub struct InspectReport {
     pub cols: u32,
     pub rows: u32,
     pub tile_count: u64,
+    pub total_levels: u32,
+    pub total_tile_count: u64,
     pub estimated_rgba_bytes: u64,
     pub estimated_rgba_mib: f64,
+    pub levels: Vec<InspectLevelReport>,
     pub backend: BackendRecommendation,
 }
 
@@ -145,14 +173,7 @@ impl CutPlan {
         let tile_height = args.tile.tile_height();
         ensure!(tile_width > 0, "tile width must be greater than 0");
         ensure!(tile_height > 0, "tile height must be greater than 0");
-        let grid = compute_grid(
-            source.width,
-            source.height,
-            tile_width,
-            tile_height,
-            args.edge,
-        )?;
-        let pad_width = zero_pad_width(grid.cols, grid.rows);
+
         let tile_index_mode =
             effective_tile_index_mode(args.manifest, args.tile_index, args.skip_empty);
         let tile = TileSpec {
@@ -164,50 +185,37 @@ impl CutPlan {
             quality: args.quality,
             flatten_alpha: args.flatten_alpha.map(|color| color.0),
         };
-        let naming_template = path_template(args.layout, args.format);
+        let naming_template = path_template(args.layout, args.format, args.max_level > 0);
         let world = build_world(args)?;
-        let mut tiles = Vec::with_capacity((grid.cols * grid.rows) as usize);
-        for y in 0..grid.rows {
-            for x in 0..grid.cols {
-                let src_x = x * tile_width;
-                let src_y = y * tile_height;
-                let src_w = source.width.saturating_sub(src_x).min(tile_width);
-                let src_h = source.height.saturating_sub(src_y).min(tile_height);
-                let content_rect = RectU32 {
-                    x: 0,
-                    y: 0,
-                    w: src_w,
-                    h: src_h,
-                };
-                let src_rect = RectU32 {
-                    x: src_x,
-                    y: src_y,
-                    w: src_w,
-                    h: src_h,
-                };
-                tiles.push(TilePlan {
-                    coord: TileCoord { level: 0, x, y },
-                    src_rect,
-                    content_rect,
-                    out_rel_path: render_rel_path(args.layout, args.format, pad_width, x, y),
-                });
-            }
-        }
+        let levels = build_level_plans(
+            source.width,
+            source.height,
+            &tile,
+            args.max_level,
+            args.layout,
+            &naming_template,
+        )?;
+        let grid = levels
+            .first()
+            .map(|level| level.grid.clone())
+            .expect("CutPlan always contains at least level 0");
+
         Ok(Self {
             source,
             tile,
             grid,
+            levels,
             layout: args.layout,
             manifest_mode: args.manifest,
             tile_index_mode,
             requested_backend: args.backend,
             max_in_memory_mib: args.max_in_memory_mib,
+            max_level: args.max_level,
             overview: args.overview,
             skip_empty: args.skip_empty,
             empty_alpha_threshold: args.empty_alpha_threshold.unwrap_or(0),
             world,
             naming_template,
-            tiles,
         })
     }
 
@@ -226,6 +234,7 @@ impl CutPlan {
             layout: self.layout,
             manifest_mode: self.manifest_mode,
             tile_index_mode: self.tile_index_mode,
+            max_level: self.max_level,
             skip_empty: self.skip_empty,
             empty_alpha_threshold: self.empty_alpha_threshold,
             overview: self.overview,
@@ -233,37 +242,54 @@ impl CutPlan {
         }
     }
 
+    pub fn total_tile_slots(&self) -> usize {
+        self.levels.iter().map(|level| level.tiles.len()).sum()
+    }
+
+    pub fn level(&self, level: u32) -> Option<&LevelPlan> {
+        self.levels
+            .iter()
+            .find(|candidate| candidate.level == level)
+    }
+
     pub fn inspect_report(
+        args: &InspectArgs,
         source: SourceInfo,
-        tile_width: u32,
-        tile_height: u32,
-        edge_mode: EdgeMode,
-        max_in_memory_mib: u64,
         support: &BackendSupport,
     ) -> Result<InspectReport> {
-        let grid = compute_grid(
+        let tile_width = args.tile.tile_width();
+        let tile_height = args.tile.tile_height();
+        let levels = build_inspect_levels(
             source.width,
             source.height,
             tile_width,
             tile_height,
-            edge_mode,
+            args.edge,
+            args.max_level,
         )?;
+        let level0 = levels
+            .first()
+            .expect("Inspect report always contains at least level 0");
         let estimated_bytes = estimated_rgba_bytes(source.width, source.height);
-        let recommended = if estimated_bytes <= max_in_memory_mib.saturating_mul(1024 * 1024) {
+        let recommended = if estimated_bytes <= args.max_in_memory_mib.saturating_mul(1024 * 1024) {
             BackendKind::Image
         } else {
             BackendKind::Vips
         };
+
         Ok(InspectReport {
             source,
             tile_width,
             tile_height,
-            edge_mode,
-            cols: grid.cols,
-            rows: grid.rows,
-            tile_count: u64::from(grid.cols) * u64::from(grid.rows),
+            edge_mode: args.edge,
+            cols: level0.cols,
+            rows: level0.rows,
+            tile_count: level0.tile_count,
+            total_levels: levels.len() as u32,
+            total_tile_count: levels.iter().map(|level| level.tile_count).sum(),
             estimated_rgba_bytes: estimated_bytes,
             estimated_rgba_mib: estimated_bytes as f64 / (1024.0 * 1024.0),
+            levels,
             backend: BackendRecommendation {
                 recommended,
                 vips_feature_enabled: support.vips_feature_enabled,
@@ -283,6 +309,91 @@ impl BuildState {
             updated_unix_secs: now_unix_secs(),
         }
     }
+}
+
+fn build_level_plans(
+    source_width: u32,
+    source_height: u32,
+    tile: &TileSpec,
+    max_level: u32,
+    layout: LayoutMode,
+    naming_template: &str,
+) -> Result<Vec<LevelPlan>> {
+    let multi_level = max_level > 0;
+    let mut levels = Vec::with_capacity(max_level.saturating_add(1) as usize);
+    for level in 0..=max_level {
+        let scale = level_scale(level);
+        let (width, height) = scaled_dimensions_for_level(source_width, source_height, level);
+        let grid = compute_grid(width, height, tile.width, tile.height, tile.edge_mode)?;
+        let mut tiles = Vec::with_capacity((grid.cols * grid.rows) as usize);
+        for y in 0..grid.rows {
+            for x in 0..grid.cols {
+                let src_x = x * tile.width;
+                let src_y = y * tile.height;
+                let src_w = width.saturating_sub(src_x).min(tile.width);
+                let src_h = height.saturating_sub(src_y).min(tile.height);
+                tiles.push(TilePlan {
+                    coord: TileCoord { level, x, y },
+                    src_rect: RectU32 {
+                        x: src_x,
+                        y: src_y,
+                        w: src_w,
+                        h: src_h,
+                    },
+                    content_rect: RectU32 {
+                        x: 0,
+                        y: 0,
+                        w: src_w,
+                        h: src_h,
+                    },
+                    out_rel_path: render_rel_path(
+                        layout,
+                        tile.format,
+                        grid.zero_pad_width,
+                        level,
+                        x,
+                        y,
+                        multi_level,
+                    ),
+                });
+            }
+        }
+        levels.push(LevelPlan {
+            level,
+            scale,
+            width,
+            height,
+            grid,
+            naming_template: naming_template.to_string(),
+            tiles,
+        });
+    }
+    Ok(levels)
+}
+
+fn build_inspect_levels(
+    source_width: u32,
+    source_height: u32,
+    tile_width: u32,
+    tile_height: u32,
+    edge_mode: EdgeMode,
+    max_level: u32,
+) -> Result<Vec<InspectLevelReport>> {
+    let mut levels = Vec::with_capacity(max_level.saturating_add(1) as usize);
+    for level in 0..=max_level {
+        let (width, height) = scaled_dimensions_for_level(source_width, source_height, level);
+        let grid = compute_grid(width, height, tile_width, tile_height, edge_mode)?;
+        levels.push(InspectLevelReport {
+            level,
+            scale: level_scale(level),
+            width,
+            height,
+            cols: grid.cols,
+            rows: grid.rows,
+            tile_count: u64::from(grid.cols) * u64::from(grid.rows),
+        });
+    }
+    Ok(levels)
 }
 
 fn build_world(args: &CutArgs) -> Result<Option<WorldMapping>> {
@@ -345,6 +456,20 @@ pub fn effective_tile_index_mode(
     }
 }
 
+pub fn level_scale(level: u32) -> f64 {
+    1.0 / (2_u64.pow(level) as f64)
+}
+
+pub fn scaled_dimensions_for_level(width: u32, height: u32, level: u32) -> (u32, u32) {
+    if level == 0 {
+        return (width, height);
+    }
+    let scale = level_scale(level);
+    let scaled_width = ((width as f64) * scale).round().max(1.0) as u32;
+    let scaled_height = ((height as f64) * scale).round().max(1.0) as u32;
+    (scaled_width, scaled_height)
+}
+
 pub fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -362,7 +487,9 @@ pub fn compute_sha256(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_grid, effective_tile_index_mode};
+    use super::{
+        compute_grid, effective_tile_index_mode, level_scale, scaled_dimensions_for_level,
+    };
     use crate::cli::{EdgeMode, ManifestMode, TileIndexMode};
 
     #[test]
@@ -388,9 +515,15 @@ mod tests {
     }
 
     #[test]
-    fn builds_edge_tile_content_rect() {
-        let grid = compute_grid(513, 513, 256, 256, EdgeMode::Pad).expect("grid");
-        assert_eq!(grid.cols, 3);
-        assert_eq!(grid.rows, 3);
+    fn scales_dimensions_from_original_size() {
+        assert_eq!(scaled_dimensions_for_level(513, 257, 1), (257, 129));
+        assert_eq!(scaled_dimensions_for_level(513, 257, 2), (128, 64));
+    }
+
+    #[test]
+    fn computes_standard_binary_level_scale() {
+        assert_eq!(level_scale(0), 1.0);
+        assert_eq!(level_scale(1), 0.5);
+        assert_eq!(level_scale(2), 0.25);
     }
 }
