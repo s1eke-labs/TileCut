@@ -1,0 +1,25 @@
+/target
+/.tilecut-tmp-*
+**/.tilecut/
+
+# Common TileCut output locations
+/build/
+/dist/
+/out/
+
+# Rust tool leftovers
+**/*.rs.bk
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.codex
+AGENTS.md
+
+# OS noise
+.DS_Store
+Thumbs.db
+tmp/
