@@ -1,5 +1,7 @@
 # TileCut
 
+[中文](README.md) | [English](README.en.md)
+
 TileCut 是一个面向游戏小地图和离线资源构建流程的 Rust CLI 工具，用来把一张大图切成固定尺寸的瓦片，并输出一份稳定、可版本化的 `manifest.json`，供别的工具或游戏项目按需加载、定位和校验。
 
 当前版本已经支持：
@@ -370,4 +372,4 @@ tests/
 
 ## License
 
-暂未指定。
+MIT，见 [LICENSE](LICENSE)。
