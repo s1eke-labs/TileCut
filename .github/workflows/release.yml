@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build And Publish Release
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+      BIN_NAME: tilecut
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate tag matches Cargo version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_name="${GITHUB_REF_NAME}"
+          tag_version="${tag_name#v}"
+          crate_version="$(sed -nE 's/^version = "(.*)"/\1/p' Cargo.toml | head -n1)"
+
+          if [[ -z "${crate_version}" ]]; then
+            echo "Failed to read package.version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          if [[ "${tag_version}" != "${crate_version}" ]]; then
+            echo "Tag ${tag_name} does not match Cargo.toml version ${crate_version}" >&2
+            exit 1
+          fi
+
+          release_binary="${BIN_NAME}-${tag_name}-${TARGET}"
+          echo "tag_name=${tag_name}" >> "${GITHUB_OUTPUT}"
+          echo "tag_version=${tag_version}" >> "${GITHUB_OUTPUT}"
+          echo "release_binary=${release_binary}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release binary
+        run: cargo build --release --locked --all-features --target "${TARGET}"
+
+      - name: Capture annotated tag message as release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/${GITHUB_REF_NAME}"
+          tag_type="$(git cat-file -t "${tag_ref}")"
+
+          if [[ "${tag_type}" != "tag" ]]; then
+            echo "Release tags must be annotated tags with a release message." >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          git cat-file tag "${tag_ref}" | sed '1,/^$/d' > dist/release-notes.md
+
+          if [[ ! -s dist/release-notes.md ]]; then
+            echo "Annotated tag message is empty." >&2
+            exit 1
+          fi
+
+          echo "body_path=dist/release-notes.md" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare release artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_binary="${{ steps.version.outputs.release_binary }}"
+
+          mkdir -p dist
+          install -m 755 "target/${TARGET}/release/${BIN_NAME}" "dist/${release_binary}"
+          (
+            cd dist
+            sha256sum "${release_binary}" > "${release_binary}.sha256"
+          )
+
+          echo "binary_path=dist/${release_binary}" >> "${GITHUB_OUTPUT}"
+          echo "checksum_path=dist/${release_binary}.sha256" >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ steps.version.outputs.tag_name }}
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          body_path: ${{ steps.notes.outputs.body_path }}
+          files: |
+            ${{ steps.artifacts.outputs.binary_path }}
+            ${{ steps.artifacts.outputs.checksum_path }}

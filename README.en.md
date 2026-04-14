@@ -339,6 +339,20 @@ cargo test
 cargo test --all-features
 ```
 
+## CI / Release
+
+- pushing to branches triggers GitHub Actions CI, which runs:
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-features`
+  - `cargo build --locked --all-features`
+- pushing a `v*` tag such as `v0.1.0` triggers the release workflow
+- the release workflow validates that the tag version matches `package.version` in `Cargo.toml`
+- the GitHub Release body is taken directly from the annotated tag message
+- release tags must be annotated tags, and the tag message must not be empty
+- the current release target is a Linux x86_64 GNU binary plus its `sha256` checksum
+- the published binary uses `all-features`, including the `vips` feature; the target machine still needs `vips` installed to use that backend at runtime
+
 ## Project Structure
 
 ```text

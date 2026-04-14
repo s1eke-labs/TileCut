@@ -339,6 +339,20 @@ cargo test
 cargo test --all-features
 ```
 
+## CI / Release
+
+- 推送分支会触发 GitHub Actions CI，执行：
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-features`
+  - `cargo build --locked --all-features`
+- 推送 `v*` 形式的 tag（例如 `v0.1.0`）会触发 release workflow
+- release workflow 会校验 tag 版本必须与 `Cargo.toml` 中的 `package.version` 一致
+- GitHub Release 正文直接使用 annotated tag 的 message
+- release tag 必须使用带注释的 annotated tag，且 tag message 不能为空
+- 当前仅发布 Linux x86_64 GNU 预编译二进制与对应 `sha256`
+- 发布二进制启用 `all-features`，包含 `vips` feature；实际使用 `vips` 后端时，目标机器仍需安装 `vips`
+
 ## 项目结构
 
 ```text
