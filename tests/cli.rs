@@ -27,6 +27,40 @@ fn read_rgba(path: &Path) -> RgbaImage {
 }
 
 #[test]
+fn demo_assets_and_docs_reference_fixed_data_root() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    for rel in [
+        "demo/index.html",
+        "demo/styles.css",
+        "demo/app.js",
+        "demo/README.md",
+        "demo/.gitignore",
+        "demo/data/.gitkeep",
+    ] {
+        assert!(root.join(rel).exists(), "{rel} should exist");
+    }
+
+    let index_html =
+        fs::read_to_string(root.join("demo/index.html")).expect("index.html should read");
+    let app_js = fs::read_to_string(root.join("demo/app.js")).expect("app.js should read");
+    let root_readme = fs::read_to_string(root.join("README.md")).expect("README should read");
+    let demo_readme =
+        fs::read_to_string(root.join("demo/README.md")).expect("demo README should read");
+    let demo_gitignore =
+        fs::read_to_string(root.join("demo/.gitignore")).expect("demo gitignore should read");
+
+    assert!(index_html.contains("./app.js"));
+    assert!(app_js.contains("const DATA_ROOT = \"./data\";"));
+    assert!(app_js.contains("manifest.json"));
+    assert!(root_readme.contains("demo/data"));
+    assert!(root_readme.contains("python -m http.server"));
+    assert!(demo_readme.contains("demo/data"));
+    assert!(demo_readme.contains("python -m http.server"));
+    assert!(demo_gitignore.contains("data/*"));
+}
+
+#[test]
 fn root_help_lists_commands_and_examples() {
     Command::cargo_bin("tilecut")
         .expect("binary")

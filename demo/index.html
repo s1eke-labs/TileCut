@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TileCut Atlas Workbench</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TileCut Static Demo</p>
+          <h1>Atlas Workbench</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="fitButton" class="action">Fit</button>
+          <button id="pixelButton" class="action">100%</button>
+          <button id="resetButton" class="action">Reset</button>
+          <button id="fullscreenButton" class="action action-strong">Fullscreen</button>
+        </div>
+      </header>
+
+      <div class="workspace" id="workspace">
+        <aside class="panel panel-left">
+          <section class="panel-block dataset-panel">
+            <p class="panel-kicker">Dataset</p>
+            <div class="stat-grid" id="datasetSummary"></div>
+          </section>
+
+          <section class="panel-block view-panel">
+            <p class="panel-kicker">View</p>
+            <div class="stat-grid" id="viewSummary"></div>
+          </section>
+        </aside>
+
+        <main class="stage">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <button id="zoomOutButton" class="toolbar-button" title="Zoom out">-</button>
+              <button id="zoomInButton" class="toolbar-button" title="Zoom in">+</button>
+            </div>
+
+            <div class="toolbar-group">
+              <label class="toolbar-label" for="levelSelect">Level</label>
+              <select id="levelSelect" class="toolbar-select">
+                <option value="auto">Auto</option>
+              </select>
+            </div>
+
+            <div class="toolbar-group toolbar-group-checks">
+              <label class="check">
+                <input id="gridToggle" type="checkbox" checked />
+                <span>Grid</span>
+              </label>
+              <label class="check">
+                <input id="labelsToggle" type="checkbox" />
+                <span>Labels</span>
+              </label>
+              <label class="check">
+                <input id="skippedToggle" type="checkbox" checked />
+                <span>Skipped</span>
+              </label>
+              <label class="check">
+                <input id="debugToggle" type="checkbox" checked />
+                <span>Debug</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="canvas-wrap" id="canvasWrap">
+            <canvas id="mapCanvas" aria-label="TileCut map preview canvas"></canvas>
+            <div id="canvasOverlay" class="canvas-overlay">
+              <div class="empty-card" id="statusCard">
+                <p class="eyebrow">Boot Status</p>
+                <h2 id="statusTitle">Preparing viewer</h2>
+                <p id="statusMessage">
+                  Loading <code>./data/manifest.json</code> and validating the TileCut output.
+                </p>
+                <pre id="statusDetails" class="status-details hidden"></pre>
+              </div>
+            </div>
+
+            <div class="legend-bar">
+              <span><i class="swatch swatch-grid"></i> Grid</span>
+              <span><i class="swatch swatch-skip"></i> Skipped</span>
+              <span><i class="swatch swatch-error"></i> Broken tile</span>
+            </div>
+          </div>
+        </main>
+
+        <aside class="panel panel-right">
+          <section class="panel-block inspector-panel">
+            <p class="panel-kicker">Inspector</p>
+            <div class="inspector" id="hoverSummary">
+              <p class="muted">Move the cursor over the map to inspect tile coordinates.</p>
+            </div>
+          </section>
+
+          <section class="panel-block health-panel">
+            <p class="panel-kicker">Render Health</p>
+            <div class="stat-grid" id="healthSummary"></div>
+          </section>
+
+          <section class="panel-block overview-panel hidden" id="overviewCard">
+            <div class="overview-head">
+              <div>
+                <p class="panel-kicker">Overview</p>
+                <p class="muted">Click to recenter the camera.</p>
+              </div>
+              <button id="overviewFitButton" class="ghost-button">Re-fit</button>
+            </div>
+            <button id="overviewButton" class="overview-button" type="button">
+              <img id="overviewImage" alt="Map overview" />
+              <span id="overviewViewport" class="overview-viewport"></span>
+            </button>
+          </section>
+        </aside>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,6 +1,7 @@
 /target
-/.tilecut-tmp-*
+.tilecut-tmp-*
 **/.tilecut/
+
 
 # Common TileCut output locations
 /build/
